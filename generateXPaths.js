@@ -1,37 +1,47 @@
 // generateXPaths.js
 // Usage:
-//   node generateXPaths.js input.xml output.txt [--ns d] [--include PROPERTY,IMAGE] [--attr ValuationType]
+//   node generateXPaths.js input.xml output.txt [--ns d] [--include PROPERTY,IMAGE]
+//        [--attr ValuationType] [--filterParent IMAGE --filterChild ImageCategoryType]
 //
-// Default: namespace 'd', include PROPERTY and IMAGE, attribute-name 'ValuationType'
+// Example:
+//   node generateXPaths.js input.xml out.txt --filterParent IMAGE --filterChild ImageCategoryType
 
 const fs = require('fs');
 const { XMLParser } = require('fast-xml-parser');
 
 const argv = process.argv.slice(2);
 if (argv.length < 2) {
-  console.error('Usage: node generateXPaths.js <input.xml> <output.txt> [--ns d] [--include A,B] [--attr ValuationType]');
+  console.error(`Usage:
+  node generateXPaths.js <input.xml> <output.txt>
+    [--ns d]
+    [--include PROPERTY,IMAGE]
+    [--attr ValuationType]
+    [--filterParent IMAGE --filterChild ImageCategoryType]`);
   process.exit(1);
 }
 
 const inputPath = argv[0];
 const outputPath = argv[1];
 
-let nsShort = 'd'; // namespace short name (prefix used as 'd:')
-let includeElements = ['PROPERTY', 'IMAGE']; // default includes (case-insensitive)
-let attrName = 'ValuationType'; // attribute to prefer for indexing (also accepts 'ValutationType' if present)
+let nsShort = 'd';
+let includeElements = ['PROPERTY', 'IMAGE'];
+let attrName = 'ValuationType';
+let filterParent = null;
+let filterChild = null;
 
 for (let i = 2; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--ns' && argv[i+1]) { nsShort = argv[++i]; }
-  else if (a === '--include' && argv[i+1]) { includeElements = argv[++i].split(',').map(s => s.trim().toUpperCase()).filter(Boolean); }
-  else if (a === '--attr' && argv[i+1]) { attrName = argv[++i]; }
+  if (a === '--ns' && argv[i+1]) nsShort = argv[++i];
+  else if (a === '--include' && argv[i+1]) includeElements = argv[++i].split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
+  else if (a === '--attr' && argv[i+1]) attrName = argv[++i];
+  else if (a === '--filterParent' && argv[i+1]) filterParent = argv[++i].toUpperCase();
+  else if (a === '--filterChild' && argv[i+1]) filterChild = argv[++i];
 }
 
-// helper to format literal safely for XPath (handles both single and double quotes)
+// helper to safely quote literal
 function formatXPathLiteral(value) {
   if (value.indexOf("'") === -1) return `'${value}'`;
   if (value.indexOf('"') === -1) return `"${value}"`;
-  // contains both -> produce concat('a', '"', 'b', "'", 'c', ...)
   const parts = value.split("'");
   const concatParts = [];
   for (let i = 0; i < parts.length; i++) {
@@ -41,7 +51,7 @@ function formatXPathLiteral(value) {
   return `concat(${concatParts.join(',')})`;
 }
 
-// load xml
+// parse XML
 const xmlText = fs.readFileSync(inputPath, 'utf8');
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -52,43 +62,50 @@ const parser = new XMLParser({
 });
 const obj = parser.parse(xmlText);
 
-// helper: determine if node object is a leaf (no element children) and extract its text
-function isLeafNode(value) {
-  // strings or numbers considered leaf text nodes
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return { leaf: true, text: String(value).trim() };
-  }
-  if (value == null || typeof value !== 'object') return { leaf: true, text: String(value ?? '').trim() };
-
-  // object - check for child element keys (keys not starting with '@_' and not '#text')
-  const childKeys = Object.keys(value).filter(k => !k.startsWith('@_') && k !== '#text');
-  if (childKeys.length === 0) {
-    // get text either in '#text' or as empty
-    const t = (typeof value['#text'] === 'string') ? value['#text'].trim() : '';
-    return { leaf: true, text: t };
-  }
-  return { leaf: false, text: null };
-}
-
-// build xpaths by traversing object tree. We'll maintain ancestor stack where each entry:
-// { tag: 'TAGNAME', nodeObj: <object>, elementsArray: <array-of-siblings-if-parent-collapsed> }
-const results = [];
-
-// helper to get bare tag (no namespace prefix)
 function bareTag(tag) {
   if (!tag) return tag;
   const idx = tag.indexOf(':');
   return idx === -1 ? tag : tag.substring(idx + 1);
 }
 
-// when building path step, prefer attribute-based predicate if attribute exists on the node
+// check if node has only text
+function isLeafNode(value) {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
+    return { leaf: true, text: String(value).trim() };
+  if (value == null || typeof value !== 'object') return { leaf: true, text: String(value ?? '').trim() };
+  const childKeys = Object.keys(value).filter(k => !k.startsWith('@_') && k !== '#text');
+  if (childKeys.length === 0) {
+    const t = (typeof value['#text'] === 'string') ? value['#text'].trim() : '';
+    return { leaf: true, text: t };
+  }
+  return { leaf: false, text: null };
+}
+
+// extract text of a specific child
+function getChildText(node, childTag) {
+  if (!node || typeof node !== 'object') return null;
+  const key = Object.keys(node).find(k => bareTag(k).toUpperCase() === childTag.toUpperCase());
+  if (!key) return null;
+  const v = node[key];
+  if (typeof v === 'string') return v.trim();
+  if (v && typeof v === 'object' && typeof v['#text'] === 'string') return v['#text'].trim();
+  return null;
+}
+
+// Build one XPath step
 function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
-  // tag: element name as seen in parsed object (may include prefix)
   const b = bareTag(tag);
   const prefixed = `${nsShort}:${b}`;
 
-  // check for attribute (fast-xml-parser attributes are stored as '@_attrName')
-  // accept both exact attrName and possible typo 'ValutationType'
+  // special handling for filterParent
+  if (filterParent && filterChild && b.toUpperCase() === filterParent) {
+    const childValue = getChildText(nodeObj, filterChild);
+    if (childValue) {
+      return `${prefixed}[@${filterChild}=${formatXPathLiteral(childValue)}]`;
+    }
+  }
+
+  // normal attribute predicate
   const attrKeysToCheck = [attrName, (attrName === 'ValuationType' ? 'ValutationType' : null)].filter(Boolean);
   let attrPredicate = null;
   for (const ak of attrKeysToCheck) {
@@ -102,7 +119,6 @@ function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
     }
   }
 
-  // determine numeric index only if siblingsArray length > 1 and attribute predicate not used
   let numeric = '';
   if (!attrPredicate && Array.isArray(siblingsArray) && siblingsArray.length > 1) {
     numeric = `[${positionIndex + 1}]`;
@@ -111,9 +127,11 @@ function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
   return `${prefixed}${attrPredicate || ''}${numeric}`;
 }
 
-// traverse function: takes an object (node) and the current path components (ancestors array of {tag,node,siblings,pos})
+// Traverse
+const results = [];
+
 function traverseNode(objNode, ancestors) {
-  if (objNode == null || typeof objNode !== 'object') return;
+  if (!objNode || typeof objNode !== 'object') return;
 
   const elementNames = Object.keys(objNode).filter(k => !k.startsWith('@_') && k !== '#text');
 
@@ -122,39 +140,26 @@ function traverseNode(objNode, ancestors) {
     const elements = Array.isArray(val) ? val : [val];
 
     elements.forEach((el, idx) => {
-      // create ancestor entry for this element
       const thisAncestor = { tag, node: el, siblings: elements, pos: idx };
       const newAncestors = ancestors.concat(thisAncestor);
+      const currentTagBare = bareTag(tag).toUpperCase();
 
-      // determine if this element is a leaf
       const leafInfo = isLeafNode(el);
-      if (leafInfo.leaf && leafInfo.text.length > 0) {
-        // only include results if any ancestor's bare tag matches includeElements
-        const anyIncludedAncestor = newAncestors.some(a => includeElements.includes(bareTag(a.tag).toUpperCase()));
-        if (anyIncludedAncestor) {
-          // build path from root of document to this leaf using '//' prefix (relative xpath)
-          // join steps with '/'
-          const steps = newAncestors.map((a, i) => {
-            const parent = i > 0 ? newAncestors[i-1] : null;
-            // the siblings array for computing index is a.siblings
-            return buildStep(a.tag, a.node, a.siblings, a.pos);
-          });
-          const xpath = '//' + steps.join('/');
 
-          results.push(`${leafInfo.text} : ${xpath}`);
-        }
-        // leaf handled, do not traverse deeper
-      } else {
-        // not leaf -> traverse children
-        traverseNode(el, newAncestors);
+      // Only start XPaths from elements in includeElements
+      const isStartElement = includeElements.includes(currentTagBare);
+
+      if (leafInfo.leaf && leafInfo.text.length > 0 && isStartElement) {
+        const steps = newAncestors.map(a => buildStep(a.tag, a.node, a.siblings, a.pos));
+        const xpath = '//' + steps.join('/');
+        results.push(`${leafInfo.text} : ${xpath}`);
       }
+
+      if (!leafInfo.leaf) traverseNode(el, newAncestors);
     });
   }
 }
 
-// start traversal from root object. fast-xml-parser yields root object with single root tag
 traverseNode(obj, []);
-
-// write output
 fs.writeFileSync(outputPath, results.join('\n'), 'utf8');
-console.log(`✅ Generated ${results.length} XPath entries -> ${outputPath}`);
+console.log(`✅ Generated ${results.length} XPath entries → ${outputPath}`);
