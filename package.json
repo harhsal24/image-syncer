@@ -11,6 +11,8 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "fast-xml-parser": "^5.3.0"
+    "fast-xml-parser": "^5.3.0",
+    "@xmldom/xmldom": "^0.9.8",
+    "xmldom": "^0.6.0"
   }
 }
