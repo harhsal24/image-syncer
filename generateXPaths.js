@@ -3,8 +3,11 @@
 //   node generateXPaths.js input.xml output.txt [--ns d] [--include PROPERTY,IMAGE]
 //        [--attr ValuationType] [--filterParent IMAGE --filterChild ImageCategoryType]
 //
+// Generates XPaths that INCLUDE ONLY elements present in the includeElements list
+// (insert '//' if included elements are separated by non-included elements).
+//
 // Example:
-//   node generateXPaths.js input.xml out.txt --filterParent IMAGE --filterChild ImageCategoryType
+//   node generateXPaths.js sample.xml out.txt --include IMAGE,PROPERTY --filterParent IMAGE --filterChild ImageCategoryType
 
 const fs = require('fs');
 const { XMLParser } = require('fast-xml-parser');
@@ -38,7 +41,6 @@ for (let i = 2; i < argv.length; i++) {
   else if (a === '--filterChild' && argv[i+1]) filterChild = argv[++i];
 }
 
-// helper to safely quote literal
 function formatXPathLiteral(value) {
   if (value.indexOf("'") === -1) return `'${value}'`;
   if (value.indexOf('"') === -1) return `"${value}"`;
@@ -51,7 +53,6 @@ function formatXPathLiteral(value) {
   return `concat(${concatParts.join(',')})`;
 }
 
-// parse XML
 const xmlText = fs.readFileSync(inputPath, 'utf8');
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -68,7 +69,6 @@ function bareTag(tag) {
   return idx === -1 ? tag : tag.substring(idx + 1);
 }
 
-// check if node has only text
 function isLeafNode(value) {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean')
     return { leaf: true, text: String(value).trim() };
@@ -81,7 +81,6 @@ function isLeafNode(value) {
   return { leaf: false, text: null };
 }
 
-// extract text of a specific child
 function getChildText(node, childTag) {
   if (!node || typeof node !== 'object') return null;
   const key = Object.keys(node).find(k => bareTag(k).toUpperCase() === childTag.toUpperCase());
@@ -92,12 +91,11 @@ function getChildText(node, childTag) {
   return null;
 }
 
-// Build one XPath step
 function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
   const b = bareTag(tag);
   const prefixed = `${nsShort}:${b}`;
 
-  // special handling for filterParent
+  // filterParent handling: if this tag is the filterParent, add child-value predicate
   if (filterParent && filterChild && b.toUpperCase() === filterParent) {
     const childValue = getChildText(nodeObj, filterChild);
     if (childValue) {
@@ -105,7 +103,7 @@ function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
     }
   }
 
-  // normal attribute predicate
+  // attribute predicate (ValuationType / ValutationType tolerant)
   const attrKeysToCheck = [attrName, (attrName === 'ValuationType' ? 'ValutationType' : null)].filter(Boolean);
   let attrPredicate = null;
   for (const ak of attrKeysToCheck) {
@@ -119,6 +117,7 @@ function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
     }
   }
 
+  // numeric index only when siblings >1 and no attr predicate
   let numeric = '';
   if (!attrPredicate && Array.isArray(siblingsArray) && siblingsArray.length > 1) {
     numeric = `[${positionIndex + 1}]`;
@@ -127,7 +126,6 @@ function buildStep(tag, nodeObj, siblingsArray, positionIndex) {
   return `${prefixed}${attrPredicate || ''}${numeric}`;
 }
 
-// Traverse
 const results = [];
 
 function traverseNode(objNode, ancestors) {
@@ -142,16 +140,46 @@ function traverseNode(objNode, ancestors) {
     elements.forEach((el, idx) => {
       const thisAncestor = { tag, node: el, siblings: elements, pos: idx };
       const newAncestors = ancestors.concat(thisAncestor);
-      const currentTagBare = bareTag(tag).toUpperCase();
 
       const leafInfo = isLeafNode(el);
 
-      // Only start XPaths from elements in includeElements
-      const isStartElement = includeElements.includes(currentTagBare);
+      // find included ancestors among the full ancestor chain (including this element)
+      const includedAncestors = newAncestors
+        .map((a, indexInNew) => ({ ...a, idxInNew: indexInNew }))
+        .filter(a => includeElements.includes(bareTag(a.tag).toUpperCase()));
 
-      if (leafInfo.leaf && leafInfo.text.length > 0 && isStartElement) {
-        const steps = newAncestors.map(a => buildStep(a.tag, a.node, a.siblings, a.pos));
-        const xpath = '//' + steps.join('/');
+      if (leafInfo.leaf && leafInfo.text.length > 0 && includedAncestors.length > 0) {
+        // Build path using only includedAncestors (preserve document order).
+        // If included ancestors are not adjacent, use '//' between them.
+        const steps = [];
+        for (let i = 0; i < includedAncestors.length; i++) {
+          const anc = includedAncestors[i];
+          const step = buildStep(anc.tag, anc.node, anc.siblings, anc.pos);
+          if (i === 0) {
+            steps.push(step);
+          } else {
+            const prev = includedAncestors[i - 1];
+            // if directly adjacent in ancestor chain, join with '/'
+            if (anc.idxInNew === prev.idxInNew + 1) {
+              steps.push('/' + step);
+            } else {
+              // not adjacent -> use descendant-or-self
+              steps.push('//' + step);
+            }
+          }
+        }
+
+        // If the last included ancestor is not the actual leaf element, append the leaf element
+        const lastIncluded = includedAncestors[includedAncestors.length - 1];
+        const leafIsSameAsLastIncluded = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
+        if (!leafIsSameAsLastIncluded) {
+          // append leaf selector as descendant (use //)
+          const leafStep = buildStep(thisAncestor.tag, thisAncestor.node, thisAncestor.siblings, thisAncestor.pos);
+          steps.push('//' + leafStep);
+        }
+
+        // assemble xpath (prefix with '//' so it is relative anywhere in doc)
+        const xpath = '//' + steps.join('');
         results.push(`${leafInfo.text} : ${xpath}`);
       }
 
