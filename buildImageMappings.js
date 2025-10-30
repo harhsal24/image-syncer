@@ -8,10 +8,9 @@
 //   (blank lines ignored)
 //   Lines starting with # or // are comments
 //
-// Example line:
-//   IMG_001 : //d:PROPERTY//d:IMAGE/d:MIMETypeIdentifier[text()='image/png']
-//
-// Output: XML file with <ImageMappings><common>... per mapping.
+// If VALUE ends with '/<imageSource>' (default '/d:ImageFileLocationIdentifier'),
+// that trailing segment is removed from the UAD_Xpath and placed into the ACI_ImageSource
+// element for that mapping.
 
 const fs = require('fs');
 const path = require('path');
@@ -25,6 +24,7 @@ if (argv.length < 2) {
 const inputPath = argv[0];
 const outputPath = argv[1];
 
+// defaults
 let imageSource = 'd:ImageFileLocationIdentifier';
 let wrapPrefix = 'tag';
 
@@ -45,9 +45,9 @@ function escapeXml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
+    .replace(/"/g, '&quot;'); 
 }
+
 
 let text;
 try {
@@ -90,26 +90,31 @@ let out = '<?xml version="1.0" encoding="utf-8"?>\n';
 out += '<ImageMappings>\n';
 
 for (const m of mappings) {
-  const k = escapeXml(m.key);
-  const v = escapeXml(m.value);
+  // For each mapping, check if value ends with '/<imageSource>' (exact)
+  const rawValue = (m.value || '').trim();
+  const suffix = '/' + imageSource;
+  let usedImageSource = imageSource; // default
+  let uadXpath = rawValue;
 
-  // Example structure per your sample:
-  // <common>
-  //   <ACI_TagRedirector>tag(key)</ACI_TagRedirector>
-  //   <ACI_Tag>key</ACI_Tag>
-  //   <ACI_Image>true</ACI_Image>
-  //   <ACI_ImageSource>d:ImageFileLocationIdentifier</ACI_ImageSource>
-  //   <UAD_Xpath>xpath(value)</UAD_Xpath>
-  // </common>
+  // compare case-sensitively by default; trim trailing whitespace before compare
+  if (rawValue.endsWith(suffix)) {
+    // remove the trailing suffix
+    uadXpath = rawValue.slice(0, rawValue.length - suffix.length);
+    // also trim any trailing slash leftover
+    if (uadXpath.endsWith('/')) uadXpath = uadXpath.slice(0, -1);
+    usedImageSource = imageSource;
+  }
+
+  const k = escapeXml(m.key);
+  const v = escapeXml(uadXpath);
 
   out += indent(1) + '<common>\n';
-  // ACI_TagRedirector: wrapPrefix(key)
-  out += indent(2) + `<ACI_TagRedirector>${escapeXml(`${wrapPrefix}(${m.key})`)}</ACI_TagRedirector>\n`;
-  // ACI_Tag: raw key (user requested examples sometimes show tag(key) here too; using raw key is more common)
+  // ACI_TagRedirector: use wrapPrefix(KEY) or just KEY if wrapPrefix empty
+  const redirector = wrapPrefix ? `${wrapPrefix}(${m.key})` : `${m.key}`;
+  out += indent(2) + `<ACI_TagRedirector>${escapeXml(redirector)}</ACI_TagRedirector>\n`;
   out += indent(2) + `<ACI_Tag>${k}</ACI_Tag>\n`;
   out += indent(2) + `<ACI_Image>true</ACI_Image>\n`;
-  out += indent(2) + `<ACI_ImageSource>${escapeXml(imageSource)}</ACI_ImageSource>\n`;
-  // UAD_Xpath: put the raw value (do not wrap with 'xpath(...)' by default)
+  out += indent(2) + `<ACI_ImageSource>${escapeXml(usedImageSource)}</ACI_ImageSource>\n`;
   out += indent(2) + `<UAD_Xpath>${v}</UAD_Xpath>\n`;
   out += indent(1) + '</common>\n';
 }
