@@ -10,7 +10,8 @@
 //
 // If VALUE ends with '/<imageSource>' (default '/d:ImageFileLocationIdentifier'),
 // that trailing segment is removed from the UAD_Xpath and placed into the ACI_ImageSource
-// element for that mapping.
+// element for that mapping. This version also strips the suffix if it has a different namespace
+// prefix or if it carries predicates (e.g. /x:ImageFileLocationIdentifier[text()='...']).
 
 const fs = require('fs');
 const path = require('path');
@@ -26,6 +27,7 @@ const outputPath = argv[1];
 
 // defaults
 let imageSource = 'd:ImageFileLocationIdentifier';
+let wrapPrefix = 'tag';
 
 for (let i = 2; i < argv.length; i++) {
   const a = argv[i];
@@ -44,9 +46,13 @@ function escapeXml(str) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;'); 
+    .replace(/"/g, '&quot;'); // keep single quotes as-is
 }
 
+// escape regex special chars
+function reEscape(s) {
+  return String(s).replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
 
 let text;
 try {
@@ -88,26 +94,43 @@ const indent = (n) => '  '.repeat(n);
 let out = '<?xml version="1.0" encoding="utf-8"?>\n';
 out += '<ImageMappings>\n';
 
+// prepare regexes for detection:
+// 1) exact imageSource match (with optional predicate), e.g. /d:ImageFileLocationIdentifier or /d:ImageFileLocationIdentifier[...]
+// 2) local-name match with any prefix, e.g. /prefix:ImageFileLocationIdentifier[...]
+// both allow optional trailing slash/spaces
+const localName = imageSource.includes(':') ? imageSource.split(':').pop() : imageSource;
+const exactRe = new RegExp(`/${reEscape(imageSource)}(?:\\s*\\[.*\\])?\\s*\\/?$`);
+const anyPrefixRe = new RegExp(`/(?:[A-Za-z0-9_\\-]+:)?${reEscape(localName)}(?:\\s*\\[.*\\])?\\s*\\/?$`);
+
 for (const m of mappings) {
-  // For each mapping, check if value ends with '/<imageSource>' (exact)
+  // For each mapping, check if value ends with '/<imageSource>' (exact or any-prefix local-name)
   const rawValue = (m.value || '').trim();
-  const suffix = '/' + imageSource;
   let usedImageSource = imageSource; // default
   let uadXpath = rawValue;
 
-  // compare case-sensitively by default; trim trailing whitespace before compare
-  if (rawValue.endsWith(suffix)) {
-    // remove the trailing suffix
-    uadXpath = rawValue.slice(0, rawValue.length - suffix.length);
-    // also trim any trailing slash leftover
-    if (uadXpath.endsWith('/')) uadXpath = uadXpath.slice(0, -1);
-    usedImageSource = imageSource;
+  // Try exact match first, then any-prefix match
+  if (exactRe.test(rawValue) || anyPrefixRe.test(rawValue)) {
+    // remove the trailing segment that matches the regex
+    // We remove the last '/' + node (with optional predicate) by replacing the matched part with ''
+    // Find last slash before the matched node
+    const matchExact = rawValue.match(exactRe);
+    const matchAny = rawValue.match(anyPrefixRe);
+    const match = matchExact || matchAny;
+    if (match) {
+      // chop off matched suffix
+      uadXpath = rawValue.slice(0, match.index);
+      // if uadXpath ends with a slash, remove it
+      if (uadXpath.endsWith('/')) uadXpath = uadXpath.slice(0, -1);
+      usedImageSource = imageSource; // keep configured imageSource as the ACI_ImageSource value
+    }
   }
 
   const k = escapeXml(m.key);
   const v = escapeXml(uadXpath);
 
   out += indent(1) + '<common>\n';
+  // ACI_TagRedirector: use wrapPrefix(KEY) or just KEY if wrapPrefix empty
+  const redirector = wrapPrefix ? `${wrapPrefix}(${m.key})` : `${m.key}`;
   out += indent(2) + `<ACI_TagRedirector>${escapeXml(redirector)}</ACI_TagRedirector>\n`;
   out += indent(2) + `<ACI_Tag>${k}</ACI_Tag>\n`;
   out += indent(2) + `<ACI_Image>true</ACI_Image>\n`;
