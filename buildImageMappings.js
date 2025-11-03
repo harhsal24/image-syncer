@@ -130,8 +130,8 @@ for (const m of mappings) {
 
   out += indent(1) + '<common>\n';
   out += indent(2) + `<ACI_TagRedirector>${k}</ACI_TagRedirector>\n`;
-  out += indent(2) + `<ACI_TagIsImage>${k}</ACI_TagIsImage>\n`;
-  out += indent(2) + `<ACI_Image>true</ACI_Image>\n`;
+  out += indent(2) + `<ACI_Tag>${k}</ACI_Tag>\n`;
+  out += indent(2) + `<ACI_TagIsImage>true</ACI_TagIsImage>\n`;
   out += indent(2) + `<ACI_ImageSource>${escapeXml(usedImageSource)}</ACI_ImageSource>\n`;
   out += indent(2) + `<UAD_Xpath>${v}</UAD_Xpath>\n`;
   out += indent(1) + '</common>\n';
