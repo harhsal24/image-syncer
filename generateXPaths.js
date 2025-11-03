@@ -1,14 +1,6 @@
-// generateXPaths.js
-// Usage:
-//   node generateXPaths.js input.xml output.txt [--ns d] [--include PROPERTY,IMAGE]
-//        [--attr ValuationUseType] [--filterParent IMAGE --filterChild ImageCategoryType]
-//        [--defaults path/to/json] [--debug]
-//
-// Notes:
-//  - Global element-instance indexing: identical element signatures (ns:TAG + predicate) are numbered
-//    in document order and the index [n] is appended when n > 1.
-//  - Default attribute for attribute-based indexing is ValuationUseType (single attribute).
-//  - Default filter: IMAGE[@ImageCategoryType='...'] (applies when ImageCategoryType child exists).
+#!/usr/bin/env node
+// generateXPaths.js (leaf steps have no numeric index)
+// Usage and behavior same as before.
 
 const fs = require('fs');
 const path = require('path');
@@ -16,21 +8,13 @@ const { XMLParser } = require('fast-xml-parser');
 
 const argv = process.argv.slice(2);
 if (argv.length < 2) {
-  console.error(`Usage:
-  node generateXPaths.js <input.xml> <output.txt>
-    [--ns d]
-    [--include PROPERTY,IMAGE]
-    [--attr ValuationUseType]
-    [--filterParent IMAGE --filterChild ImageCategoryType]
-    [--defaults <defaults.json>]
-    [--debug]`);
+  console.error('Usage: node generateXPaths.js <input.xml> <output.txt> [--ns d] [--include PROPERTY,IMAGE] [--attr ValuationUseType] [--filterParent IMAGE --filterChild ImageCategoryType] [--defaults <json>] [--debug]');
   process.exit(1);
 }
 
 const inputPath = argv[0];
 const outputPath = argv[1];
 
-// built-in defaults
 const builtInDefaults = {
   nsShort: 'd',
   includeElements: ['PROPERTY', 'IMAGE'],
@@ -39,29 +23,27 @@ const builtInDefaults = {
   filterChild: 'ImageCategoryType'
 };
 
-// parse CLI
 let defaultsFileFromCLI = null;
 let cliOptions = {};
 let debug = false;
 for (let i = 2; i < argv.length; i++) {
   const a = argv[i];
-  if (a === '--ns' && argv[i+1]) { cliOptions.nsShort = argv[++i]; }
-  else if (a === '--include' && argv[i+1]) { cliOptions.includeElements = argv[++i]; }
-  else if (a === '--attr' && argv[i+1]) { cliOptions.attrName = argv[++i]; }
-  else if (a === '--filterParent' && argv[i+1]) { cliOptions.filterParent = argv[++i]; }
-  else if (a === '--filterChild' && argv[i+1]) { cliOptions.filterChild = argv[++i]; }
-  else if (a === '--defaults' && argv[i+1]) { defaultsFileFromCLI = argv[++i]; }
-  else if (a === '--debug') { debug = true; }
+  if (a === '--ns' && argv[i+1]) cliOptions.nsShort = argv[++i];
+  else if (a === '--include' && argv[i+1]) cliOptions.includeElements = argv[++i];
+  else if (a === '--attr' && argv[i+1]) cliOptions.attrName = argv[++i];
+  else if (a === '--filterParent' && argv[i+1]) cliOptions.filterParent = argv[++i];
+  else if (a === '--filterChild' && argv[i+1]) cliOptions.filterChild = argv[++i];
+  else if (a === '--defaults' && argv[i+1]) defaultsFileFromCLI = argv[++i];
+  else if (a === '--debug') debug = true;
 }
 
-function tryLoadDefaults(filePath) {
+function tryLoadDefaults(fp) {
   try {
-    if (!filePath) return null;
-    if (!fs.existsSync(filePath)) return null;
-    const txt = fs.readFileSync(filePath, 'utf8');
-    return JSON.parse(txt);
-  } catch (err) {
-    console.warn(`Warning: failed to load defaults JSON at ${filePath}: ${err.message}`);
+    if (!fp) return null;
+    if (!fs.existsSync(fp)) return null;
+    return JSON.parse(fs.readFileSync(fp, 'utf8'));
+  } catch (e) {
+    console.warn(`Warning: could not load defaults ${fp}: ${e.message}`);
     return null;
   }
 }
@@ -69,25 +51,16 @@ function tryLoadDefaults(filePath) {
 const defaultsJsonPath = defaultsFileFromCLI || path.join(process.cwd(), 'generateXPaths.defaults.json');
 const fileDefaults = tryLoadDefaults(defaultsJsonPath) || {};
 
-const cfg = {
-  ...builtInDefaults,
-  ...fileDefaults,
-  ...cliOptions
-};
-
-// normalize
-if (typeof cfg.includeElements === 'string') {
-  cfg.includeElements = cfg.includeElements.split(',').map(s => s.trim()).filter(Boolean);
-}
+const cfg = { ...builtInDefaults, ...fileDefaults, ...cliOptions };
+if (typeof cfg.includeElements === 'string') cfg.includeElements = cfg.includeElements.split(',').map(s => s.trim());
 cfg.includeElements = (Array.isArray(cfg.includeElements) ? cfg.includeElements : []).map(s => String(s).toUpperCase());
 cfg.nsShort = String(cfg.nsShort || builtInDefaults.nsShort);
 cfg.attrName = String(cfg.attrName || builtInDefaults.attrName);
 cfg.filterParent = cfg.filterParent ? String(cfg.filterParent).toUpperCase() : null;
 cfg.filterChild = cfg.filterChild ? String(cfg.filterChild) : null;
 
-if (debug) console.log('Using configuration:', JSON.stringify(cfg, null, 2));
+if (debug) console.log('Config:', JSON.stringify(cfg, null, 2));
 
-// helpers
 function formatXPathLiteral(value) {
   value = String(value);
   if (value.indexOf("'") === -1) return `'${value}'`;
@@ -102,12 +75,8 @@ function formatXPathLiteral(value) {
 }
 
 let xmlText;
-try {
-  xmlText = fs.readFileSync(inputPath, 'utf8');
-} catch (err) {
-  console.error(`Failed to read input XML: ${err.message}`);
-  process.exit(2);
-}
+try { xmlText = fs.readFileSync(inputPath, 'utf8'); }
+catch (e) { console.error(`Failed to read ${inputPath}: ${e.message}`); process.exit(2); }
 
 const parser = new XMLParser({
   ignoreAttributes: false,
@@ -118,12 +87,8 @@ const parser = new XMLParser({
 });
 
 let obj;
-try {
-  obj = parser.parse(xmlText);
-} catch (err) {
-  console.error(`Failed to parse XML: ${err.message}`);
-  process.exit(3);
-}
+try { obj = parser.parse(xmlText); }
+catch (e) { console.error(`Failed to parse XML: ${e.message}`); process.exit(3); }
 
 function bareTag(tag) {
   if (!tag) return tag;
@@ -131,18 +96,14 @@ function bareTag(tag) {
   return idx === -1 ? tag : tag.substring(idx + 1);
 }
 
-// improved leaf detection
 function isLeafNode(value) {
   if (value == null) return { leaf: true, text: '' };
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return { leaf: true, text: String(value).trim() };
-  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return { leaf: true, text: String(value).trim() };
   if (typeof value !== 'object') return { leaf: true, text: String(value).trim() };
-
   const childKeys = Object.keys(value).filter(k => !k.startsWith('@_') && k !== '#text');
   if (childKeys.length === 0) {
-    const textVal = (typeof value['#text'] === 'string' && value['#text'].trim().length > 0) ? value['#text'].trim() : '';
-    return { leaf: true, text: textVal };
+    const t = (typeof value['#text'] === 'string') ? value['#text'].trim() : '';
+    return { leaf: true, text: t };
   }
   return { leaf: false, text: null };
 }
@@ -158,20 +119,16 @@ function getChildText(node, childTag) {
   return null;
 }
 
-// global signature counts (signature => count)
 const signatureCounts = new Map();
+const compositeKeyCounters = new Map();
+const compositeInstanceToNumber = new Map();
 
-// build predicate string for an element (without numeric index)
 function predicateStringForElement(tag, nodeObj) {
   const b = bareTag(tag);
-  // filterParent (e.g., IMAGE[@ImageCategoryType='...'])
   if (cfg.filterParent && cfg.filterChild && b.toUpperCase() === cfg.filterParent) {
-    const childVal = getChildText(nodeObj, cfg.filterChild);
-    if (childVal != null && childVal !== '') {
-      return `[@${cfg.filterChild}=${formatXPathLiteral(childVal)}]`;
-    }
+    const cv = getChildText(nodeObj, cfg.filterChild);
+    if (cv != null && cv !== '') return `[@${cfg.filterChild}=${formatXPathLiteral(cv)}]`;
   }
-  // attribute-based predicate using single cfg.attrName
   if (cfg.attrName) {
     const attrKey = '@_' + cfg.attrName;
     if (nodeObj && Object.prototype.hasOwnProperty.call(nodeObj, attrKey)) {
@@ -184,80 +141,215 @@ function predicateStringForElement(tag, nodeObj) {
   return '';
 }
 
-// build step string, accept assignedGlobalIndex (number) to optionally append [n] when >1
-function buildStep(tag, nodeObj, assignedGlobalIndex) {
+// build step, optionally include index; alwaysIncludeIndex true forces index even if 1
+function buildStepWithIndex(tag, nodeObj, assignedIndex, alwaysIncludeIndex) {
   const b = bareTag(tag);
-  const prefixed = `${cfg.nsShort}:${b}`;
-  const pred = predicateStringForElement(tag, nodeObj);
-  const base = `${prefixed}${pred}`;
-  if (assignedGlobalIndex && assignedGlobalIndex > 1) {
-    return `${base}[${assignedGlobalIndex}]`;
+  const pref = `${cfg.nsShort}:${b}`;
+  const pred = predicateStringForElement(tag, nodeObj) || '';
+  const base = `${pref}${pred}`;
+  if (typeof assignedIndex === 'number' && (alwaysIncludeIndex || assignedIndex > 1)) {
+    return `${base}[${assignedIndex}]`;
   }
   return base;
 }
 
-// traversal: when we visit element instance, compute its signature and increment global count once.
-// attach assigned index to the ancestor object so it's available when building paths for leaves.
+function buildNormalStep(tag, nodeObj, assignedIndex) {
+  return buildStepWithIndex(tag, nodeObj, assignedIndex, false);
+}
+
 const results = [];
 let totalLeaves = 0;
 let leavesWithIncludedAncestors = 0;
 
-function traverseNode(objNode, ancestors) {
-  if (!objNode || typeof objNode !== 'object') return;
+function traverseNode(node, ancestors) {
+  if (!node || typeof node !== 'object') return;
+  const elementNames = Object.keys(node).filter(k => !k.startsWith('@_') && k !== '#text');
 
-  const elementNames = Object.keys(objNode).filter(k => !k.startsWith('@_') && k !== '#text');
   for (const tag of elementNames) {
-    const val = objNode[tag];
+    const val = node[tag];
     const elements = Array.isArray(val) ? val : [val];
 
     elements.forEach((el, idx) => {
-      // compute predicate string for this element and signature key
-      const predStr = predicateStringForElement(tag, el); // may be ''
-      const signatureKey = `${cfg.nsShort}:${bareTag(tag)}${predStr}`;
+      const predStr = predicateStringForElement(tag, el);
+      const sig = `${cfg.nsShort}:${bareTag(tag)}${predStr}`;
+      const prev = signatureCounts.get(sig) || 0;
+      const newIdx = prev + 1;
+      signatureCounts.set(sig, newIdx);
 
-      // increment global signature count for the element instance
-      const prev = signatureCounts.get(signatureKey) || 0;
-      const newCount = prev + 1;
-      signatureCounts.set(signatureKey, newCount);
-
-      // create ancestor entry (store assignedGlobalIndex)
-      const thisAncestor = { tag, node: el, siblings: elements, pos: idx, assignedIndex: newCount };
+      const thisAncestor = { tag, node: el, siblings: elements, pos: idx, assignedIndex: newIdx };
       const newAncestors = ancestors.concat(thisAncestor);
 
       const leafInfo = isLeafNode(el);
       if (leafInfo.leaf) totalLeaves++;
 
-      // find included ancestors among the full chain
       const includedAncestors = newAncestors
-        .map((a, indexInNew) => ({ ...a, idxInNew: indexInNew }))
+        .map((a, i) => ({ ...a, idxInNew: i }))
         .filter(a => cfg.includeElements.includes(bareTag(a.tag).toUpperCase()));
 
       if (leafInfo.leaf && leafInfo.text.length > 0 && includedAncestors.length > 0) {
         leavesWithIncludedAncestors++;
 
-        // Build path using only includedAncestors (in document order).
-        const parts = [];
+        // find start included index (first with attr predicate else 0)
+        let startIncludedIdx = -1;
         for (let i = 0; i < includedAncestors.length; i++) {
           const anc = includedAncestors[i];
-          const stepStr = buildStep(anc.tag, anc.node, anc.assignedIndex);
-          if (i === 0) parts.push(stepStr);
-          else {
-            const prevAnc = includedAncestors[i - 1];
-            if (anc.idxInNew === prevAnc.idxInNew + 1) parts.push('/' + stepStr);
-            else parts.push('//' + stepStr);
+          const p = predicateStringForElement(anc.tag, anc.node);
+          if (p && p.indexOf(`@${cfg.attrName}=`) !== -1) { startIncludedIdx = i; break; }
+        }
+        if (startIncludedIdx === -1) startIncludedIdx = 0;
+
+        // find image included index (filterParent with predicate)
+        let imageIncludedIdx = -1;
+        for (let i = 0; i < includedAncestors.length; i++) {
+          const anc = includedAncestors[i];
+          const bname = bareTag(anc.tag).toUpperCase();
+          const p = predicateStringForElement(anc.tag, anc.node);
+          if (cfg.filterParent && bname === cfg.filterParent && p) { imageIncludedIdx = i; break; }
+        }
+
+        let xpath = null;
+        if (imageIncludedIdx >= 0 && startIncludedIdx <= imageIncludedIdx) {
+          const slice = includedAncestors.slice(startIncludedIdx, imageIncludedIdx + 1);
+
+          // composite signature and instance key
+          const compositeSignatureParts = slice.map(s => {
+            const p = predicateStringForElement(s.tag, s.node) || '';
+            return `${cfg.nsShort}:${bareTag(s.tag)}${p}`;
+          });
+          const compositeKey = compositeSignatureParts.join('||');
+
+          const instanceIdParts = slice.map(s => `${cfg.nsShort}:${bareTag(s.tag)}#${s.assignedIndex}`);
+          const compositeInstanceKey = compositeKey + '::' + instanceIdParts.join(',');
+
+          let compositeNumber;
+          if (compositeInstanceToNumber.has(compositeInstanceKey)) {
+            compositeNumber = compositeInstanceToNumber.get(compositeInstanceKey);
+          } else {
+            const prevCount = compositeKeyCounters.get(compositeKey) || 0;
+            const nextCount = prevCount + 1;
+            compositeKeyCounters.set(compositeKey, nextCount);
+            compositeInstanceToNumber.set(compositeInstanceKey, nextCount);
+            compositeNumber = nextCount;
+          }
+
+          // build inside parts: OMIT numeric index for the filterParent (IMAGE) inside parentheses
+          const insideParts = slice.map(s => {
+            const isFilterParent = (bareTag(s.tag).toUpperCase() === cfg.filterParent);
+            if (isFilterParent) {
+              return buildStepWithIndex(s.tag, s.node, null, false); // no numeric index for IMAGE here
+            } else {
+              return buildStepWithIndex(s.tag, s.node, s.assignedIndex, true); // include PROPERTY index
+            }
+          });
+
+          const insideJoined = insideParts.reduce((acc, part, i) => {
+            if (i === 0) return part;
+            const prev = slice[i - 1];
+            const curr = slice[i];
+            if (curr.idxInNew === prev.idxInNew + 1) return acc + '/' + part;
+            return acc + '//' + part;
+          }, '');
+
+          const grouped = `(//${insideJoined})[${compositeNumber}]`;
+
+          // append included ancestors after imageIncludedIdx (if any)
+          const afterParts = [];
+          for (let j = imageIncludedIdx + 1; j < includedAncestors.length; j++) {
+            const anc = includedAncestors[j];
+            const step = buildNormalStep(anc.tag, anc.node, anc.assignedIndex);
+            const prev = includedAncestors[j - 1];
+            if (anc.idxInNew === prev.idxInNew + 1) afterParts.push('/' + step);
+            else afterParts.push('//' + step);
+          }
+
+          // append leaf (without index)
+          const lastIncluded = includedAncestors[includedAncestors.length - 1];
+          const leafIsSame = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
+          if (!leafIsSame) {
+            // build leaf step WITHOUT numeric index
+            const leafStepNoIndex = buildStepWithIndex(thisAncestor.tag, thisAncestor.node, null, false);
+            // determine separator relative to previous included
+            const prevInc = includedAncestors[includedAncestors.length - 1];
+            const thisIdxInNew = newAncestors.length - 1;
+            if (thisIdxInNew === prevInc.idxInNew + 1) afterParts.push('/' + leafStepNoIndex);
+            else afterParts.push('//' + leafStepNoIndex);
+          }
+
+          xpath = grouped + afterParts.join('');
+        } else {
+          // fallback: grouped IMAGE or normal path
+          let imageIdx = -1;
+          for (let i = 0; i < includedAncestors.length; i++) {
+            const anc = includedAncestors[i];
+            const bname = bareTag(anc.tag).toUpperCase();
+            const p = predicateStringForElement(anc.tag, anc.node);
+            if (cfg.filterParent && bname === cfg.filterParent && p) { imageIdx = i; break; }
+          }
+
+          if (imageIdx >= 0) {
+            const groupedAnc = includedAncestors[imageIdx];
+            const sig = `${cfg.nsShort}:${bareTag(groupedAnc.tag)}${predicateStringForElement(groupedAnc.tag, groupedAnc.node)}`;
+            const instanceKey = sig + '::' + `${cfg.nsShort}:${bareTag(groupedAnc.tag)}#${groupedAnc.assignedIndex}`;
+            let compositeNumber;
+            if (compositeInstanceToNumber.has(instanceKey)) {
+              compositeNumber = compositeInstanceToNumber.get(instanceKey);
+            } else {
+              const prevCount = compositeKeyCounters.get(sig) || 0;
+              const nextCount = prevCount + 1;
+              compositeKeyCounters.set(sig, nextCount);
+              compositeInstanceToNumber.set(instanceKey, nextCount);
+              compositeNumber = nextCount;
+            }
+
+            const grouped = `(//${sig})[${compositeNumber}]`;
+
+            const afterParts = [];
+            for (let j = imageIdx + 1; j < includedAncestors.length; j++) {
+              const anc = includedAncestors[j];
+              const step = buildNormalStep(anc.tag, anc.node, anc.assignedIndex);
+              const prev = includedAncestors[j - 1];
+              if (anc.idxInNew === prev.idxInNew + 1) afterParts.push('/' + step);
+              else afterParts.push('//' + step);
+            }
+
+            // append leaf (without index)
+            const lastIncluded = includedAncestors[includedAncestors.length - 1];
+            const leafIsSame = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
+            if (!leafIsSame) {
+              const leafStepNoIndex = buildStepWithIndex(thisAncestor.tag, thisAncestor.node, null, false);
+              const prevInc = includedAncestors[includedAncestors.length - 1];
+              const thisIdxInNew = newAncestors.length - 1;
+              if (thisIdxInNew === prevInc.idxInNew + 1) afterParts.push('/' + leafStepNoIndex);
+              else afterParts.push('//' + leafStepNoIndex);
+            }
+
+            xpath = grouped + afterParts.join('');
+          } else {
+            // plain included-only path
+            const parts = [];
+            for (let i = 0; i < includedAncestors.length; i++) {
+              const anc = includedAncestors[i];
+              const step = buildNormalStep(anc.tag, anc.node, anc.assignedIndex);
+              if (i === 0) parts.push(step);
+              else {
+                const prev = includedAncestors[i - 1];
+                if (anc.idxInNew === prev.idxInNew + 1) parts.push('/' + step);
+                else parts.push('//' + step);
+              }
+            }
+
+            // append leaf without index
+            const lastIncluded = includedAncestors[includedAncestors.length - 1];
+            const leafIsSame = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
+            if (!leafIsSame) {
+              const leafStepNoIndex = buildStepWithIndex(thisAncestor.tag, thisAncestor.node, null, false);
+              parts.push('//' + leafStepNoIndex);
+            }
+
+            xpath = '//' + parts.join('');
           }
         }
 
-        // append leaf element if it's not same as last included element
-        const lastIncluded = includedAncestors[includedAncestors.length - 1];
-        const leafIsSameAsLastIncluded = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
-        if (!leafIsSameAsLastIncluded) {
-          // leaf step likely has its own assignedIndex already (we set it earlier)
-          const leafStep = buildStep(thisAncestor.tag, thisAncestor.node, thisAncestor.assignedIndex);
-          parts.push('//' + leafStep);
-        }
-
-        const xpath = '//' + parts.join('');
         results.push(`${leafInfo.text} : ${xpath}`);
       }
 
@@ -266,28 +358,16 @@ function traverseNode(objNode, ancestors) {
   }
 }
 
-// run
 traverseNode(obj, []);
 
-// write output
-try {
-  fs.writeFileSync(outputPath, results.join('\n'), 'utf8');
-  console.log(`✅ Generated ${results.length} XPath entries → ${outputPath}`);
-} catch (err) {
-  console.error(`Failed to write output: ${err.message}`);
-  process.exit(4);
-}
+try { fs.writeFileSync(outputPath, results.join('\n'), 'utf8'); console.log(`✅ Generated ${results.length} XPath entries → ${outputPath}`); }
+catch (e) { console.error(`Failed to write output: ${e.message}`); process.exit(4); }
 
-// diagnostics
 if (results.length === 0) {
   console.warn('⚠️  No XPath entries were produced.');
   console.warn(` - total leaf nodes found: ${totalLeaves}`);
   console.warn(` - leaf nodes that have at least one ancestor in includeElements (${cfg.includeElements.join(', ')}): ${leavesWithIncludedAncestors}`);
-  console.warn('Possible reasons:');
-  console.warn('  • includeElements may not match your XML element names (check namespaces/prefixes).');
-  console.warn('  • leaf nodes may contain no text (empty or whitespace-only).');
-  console.warn(`  • attribute-based indexing uses only single attribute: '${cfg.attrName}'. Use --attr to change.`);
-  if (!debug) console.warn('Run again with --debug to print config and help troubleshoot.');
+  if (!debug) console.warn('Run with --debug to diagnose.');
 } else if (debug) {
   console.log(`Debug: totalLeaves=${totalLeaves}, leavesWithIncludedAncestors=${leavesWithIncludedAncestors}`);
 }
