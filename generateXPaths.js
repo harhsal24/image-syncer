@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// generateXPaths.js (leaf steps have no numeric index)
-// Usage and behavior same as before.
+// generateXPaths.js (composite numbering scoped per PROPERTY instance)
+// Usage same as before.
 
 const fs = require('fs');
 const path = require('path');
@@ -120,6 +120,10 @@ function getChildText(node, childTag) {
 }
 
 const signatureCounts = new Map();
+
+// composite counters and instance mapping
+// NOTE: compositeKeyCounters now stores counts per-scopeKey (scopeKey includes start-property instance)
+// compositeInstanceToNumber maps compositeInstanceKey -> assigned composite number
 const compositeKeyCounters = new Map();
 const compositeInstanceToNumber = new Map();
 
@@ -127,7 +131,7 @@ function predicateStringForElement(tag, nodeObj) {
   const b = bareTag(tag);
   if (cfg.filterParent && cfg.filterChild && b.toUpperCase() === cfg.filterParent) {
     const cv = getChildText(nodeObj, cfg.filterChild);
-    if (cv != null && cv !== '') return `[@${cfg.filterChild}=${formatXPathLiteral(cv)}]`;
+    if (cv != null && cv !== '') return `[d:${cfg.filterChild}=${formatXPathLiteral(cv)}]`;
   }
   if (cfg.attrName) {
     const attrKey = '@_' + cfg.attrName;
@@ -160,6 +164,15 @@ function buildNormalStep(tag, nodeObj, assignedIndex) {
 const results = [];
 let totalLeaves = 0;
 let leavesWithIncludedAncestors = 0;
+
+function findNearestPropertyAncestor(ancestors) {
+  // find nearest ancestor with bareTag PROPERTY in the full ancestor chain (not only included)
+  for (let i = ancestors.length - 1; i >= 0; i--) {
+    const a = ancestors[i];
+    if (bareTag(a.tag).toUpperCase() === 'PROPERTY') return a;
+  }
+  return null;
+}
 
 function traverseNode(node, ancestors) {
   if (!node || typeof node !== 'object') return;
@@ -211,28 +224,50 @@ function traverseNode(node, ancestors) {
         if (imageIncludedIdx >= 0 && startIncludedIdx <= imageIncludedIdx) {
           const slice = includedAncestors.slice(startIncludedIdx, imageIncludedIdx + 1);
 
-          // composite signature and instance key
+          // composite signature parts
           const compositeSignatureParts = slice.map(s => {
             const p = predicateStringForElement(s.tag, s.node) || '';
             return `${cfg.nsShort}:${bareTag(s.tag)}${p}`;
           });
           const compositeKey = compositeSignatureParts.join('||');
 
+          // instance id parts (per-element assignedIndex) to uniquely identify instance
           const instanceIdParts = slice.map(s => `${cfg.nsShort}:${bareTag(s.tag)}#${s.assignedIndex}`);
           const compositeInstanceKey = compositeKey + '::' + instanceIdParts.join(',');
 
+          // Build scopeKey (scope is the start PROPERTY instance if present)
+          // startElement is includedAncestors[startIncludedIdx]
+          const startElem = includedAncestors[startIncludedIdx];
+          let scopeKey;
+          if (startElem && bareTag(startElem.tag).toUpperCase() === 'PROPERTY') {
+            // scope by the start PROPERTY instance
+            const startInstanceKey = `${cfg.nsShort}:${bareTag(startElem.tag)}#${startElem.assignedIndex}`;
+            scopeKey = compositeKey + '::scope:' + startInstanceKey;
+          } else {
+            // fallback: try to find nearest PROPERTY ancestor (even if not included)
+            const nearestProp = findNearestPropertyAncestor(newAncestors);
+            if (nearestProp) {
+              const startInstanceKey = `${cfg.nsShort}:${bareTag(nearestProp.tag)}#${nearestProp.assignedIndex}`;
+              scopeKey = compositeKey + '::scope:' + startInstanceKey;
+            } else {
+              // global scope if no property found
+              scopeKey = compositeKey + '::scope:GLOBAL';
+            }
+          }
+
+          // If composite instance already assigned, reuse; else allocate from scoped counter
           let compositeNumber;
           if (compositeInstanceToNumber.has(compositeInstanceKey)) {
             compositeNumber = compositeInstanceToNumber.get(compositeInstanceKey);
           } else {
-            const prevCount = compositeKeyCounters.get(compositeKey) || 0;
+            const prevCount = compositeKeyCounters.get(scopeKey) || 0;
             const nextCount = prevCount + 1;
-            compositeKeyCounters.set(compositeKey, nextCount);
+            compositeKeyCounters.set(scopeKey, nextCount);
             compositeInstanceToNumber.set(compositeInstanceKey, nextCount);
             compositeNumber = nextCount;
           }
 
-          // build inside parts: OMIT numeric index for the filterParent (IMAGE) inside parentheses
+          // build insideParts: omit numeric index for filterParent (IMAGE) inside parentheses
           const insideParts = slice.map(s => {
             const isFilterParent = (bareTag(s.tag).toUpperCase() === cfg.filterParent);
             if (isFilterParent) {
@@ -266,9 +301,7 @@ function traverseNode(node, ancestors) {
           const lastIncluded = includedAncestors[includedAncestors.length - 1];
           const leafIsSame = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
           if (!leafIsSame) {
-            // build leaf step WITHOUT numeric index
             const leafStepNoIndex = buildStepWithIndex(thisAncestor.tag, thisAncestor.node, null, false);
-            // determine separator relative to previous included
             const prevInc = includedAncestors[includedAncestors.length - 1];
             const thisIdxInNew = newAncestors.length - 1;
             if (thisIdxInNew === prevInc.idxInNew + 1) afterParts.push('/' + leafStepNoIndex);
@@ -278,6 +311,7 @@ function traverseNode(node, ancestors) {
           xpath = grouped + afterParts.join('');
         } else {
           // fallback: grouped IMAGE or normal path
+          // For single-image grouping, try to scope by nearest PROPERTY ancestor (if any)
           let imageIdx = -1;
           for (let i = 0; i < includedAncestors.length; i++) {
             const anc = includedAncestors[i];
@@ -289,14 +323,25 @@ function traverseNode(node, ancestors) {
           if (imageIdx >= 0) {
             const groupedAnc = includedAncestors[imageIdx];
             const sig = `${cfg.nsShort}:${bareTag(groupedAnc.tag)}${predicateStringForElement(groupedAnc.tag, groupedAnc.node)}`;
+
+            // determine scopeKey for single-image grouping: nearest PROPERTY ancestor if present, else GLOBAL
+            const nearestProp = findNearestPropertyAncestor(newAncestors);
+            let scopeKey;
+            if (nearestProp) {
+              const startInstanceKey = `${cfg.nsShort}:${bareTag(nearestProp.tag)}#${nearestProp.assignedIndex}`;
+              scopeKey = sig + '::scope:' + startInstanceKey;
+            } else {
+              scopeKey = sig + '::scope:GLOBAL';
+            }
+
             const instanceKey = sig + '::' + `${cfg.nsShort}:${bareTag(groupedAnc.tag)}#${groupedAnc.assignedIndex}`;
             let compositeNumber;
             if (compositeInstanceToNumber.has(instanceKey)) {
               compositeNumber = compositeInstanceToNumber.get(instanceKey);
             } else {
-              const prevCount = compositeKeyCounters.get(sig) || 0;
+              const prevCount = compositeKeyCounters.get(scopeKey) || 0;
               const nextCount = prevCount + 1;
-              compositeKeyCounters.set(sig, nextCount);
+              compositeKeyCounters.set(scopeKey, nextCount);
               compositeInstanceToNumber.set(instanceKey, nextCount);
               compositeNumber = nextCount;
             }
@@ -325,7 +370,7 @@ function traverseNode(node, ancestors) {
 
             xpath = grouped + afterParts.join('');
           } else {
-            // plain included-only path
+            // plain included-only path (leaf without index)
             const parts = [];
             for (let i = 0; i < includedAncestors.length; i++) {
               const anc = includedAncestors[i];
@@ -338,7 +383,6 @@ function traverseNode(node, ancestors) {
               }
             }
 
-            // append leaf without index
             const lastIncluded = includedAncestors[includedAncestors.length - 1];
             const leafIsSame = (bareTag(lastIncluded.tag).toUpperCase() === bareTag(thisAncestor.tag).toUpperCase());
             if (!leafIsSame) {
@@ -360,8 +404,13 @@ function traverseNode(node, ancestors) {
 
 traverseNode(obj, []);
 
-try { fs.writeFileSync(outputPath, results.join('\n'), 'utf8'); console.log(`✅ Generated ${results.length} XPath entries → ${outputPath}`); }
-catch (e) { console.error(`Failed to write output: ${e.message}`); process.exit(4); }
+try {
+  fs.writeFileSync(outputPath, results.join('\n'), 'utf8');
+  console.log(`✅ Generated ${results.length} XPath entries → ${outputPath}`);
+} catch (e) {
+  console.error(`Failed to write output: ${e.message}`);
+  process.exit(4);
+}
 
 if (results.length === 0) {
   console.warn('⚠️  No XPath entries were produced.');
